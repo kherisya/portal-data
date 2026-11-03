@@ -1,70 +1,268 @@
-import time
+import io
+import pandas as pd
+import plotly.graph_objects as go
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="Tes UN SDG v3", layout="wide")
-st.title("Tes UN SDG v3: ketersediaan Indonesia")
+st.set_page_config(page_title="World Bank Data Explorer - Indonesia", layout="wide")
 
-H = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", "Accept": "application/json"}
-BASE = "https://unstats.un.org/sdgapi/v1/sdg"
+st.title("🌐 World Bank Open Data Explorer - Indonesia")
+st.write(
+    "Eksplorasi ribuan indikator resmi **World Bank (World Development Indicators)** "
+    "khusus untuk Indonesia secara otomatis dan real-time."
+)
 
-def ringkas(url):
-    st.code(url)
-    t0 = time.time()
+st.caption("Versi modul: 2026-11-03 · nilai ditampilkan dan diunduh tanpa pembulatan")
+
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+}
+
+# =============================================================================
+# 1. LOAD KATALOG INDIKATOR — 100% LIVE DARI WDI API
+# =============================================================================
+@st.cache_data(ttl=86400, show_spinner=False)
+def load_all_indicators():
+    indicators = []
+    url = "https://api.worldbank.org/v2/indicator?source=2&format=json&per_page=3000"
     try:
-        r = requests.get(url, headers=H, timeout=40)
-    except Exception as e:
-        st.error(f"{type(e).__name__}: {e}")
-        return None
-    st.write(f"HTTP **{r.status_code}** | {time.time()-t0:.2f} dtk | {len(r.content):,} byte")
-    if r.status_code != 200:
-        st.text(r.text[:200])
-        return None
-    try:
-        js = r.json()
-    except ValueError:
-        st.text(r.text[:200])
-        return None
-    if isinstance(js, dict):
-        st.write("Kunci:", list(js.keys()), "| totalElements:", js.get("totalElements"),
-                 "| totalPages:", js.get("totalPages"))
-        data = js.get("data")
-        if isinstance(data, list) and data:
-            seri = {d.get("series") for d in data if isinstance(d, dict)}
-            st.write(f"Baris di halaman: {len(data)} | seri berbeda di halaman ini: {len(seri)}")
-            st.write("Contoh seri:", sorted(s for s in seri if s)[:8])
-            st.write("geoAreaCode berbeda:", sorted({str(d.get('geoAreaCode')) for d in data})[:5])
-        else:
-            st.text(str(js)[:300])
-    elif isinstance(js, list):
-        st.write(f"Daftar, {len(js)} entri.")
-        if js:
-            st.text(str(js[0])[:300])
-    return js
+        res = requests.get(url, headers=HEADERS, timeout=25)
+        if res.status_code != 200:
+            return []
+        data = res.json()
+        if len(data) > 1 and data[1]:
+            for item in data[1]:
+                ind_id = item.get("id")
+                ind_name = item.get("name")
+                if ind_id and ind_name:
+                    indicators.append({
+                        "id": ind_id,
+                        "name": ind_name,
+                        "sourceNote": item.get("sourceNote", ""),
+                        "sourceOrg": item.get("sourceOrganization", "World Bank")
+                    })
+    except Exception:
+        pass
+    return indicators
 
-if st.button("Jalankan tes", type="primary"):
-    st.header("A. Kandidat endpoint ketersediaan")
-    for u in [
-        f"{BASE}/Series/SL_TLF_UEM/GeoAreas",
-        f"{BASE}/Series/Data?areaCode=360&pageSize=5",
-        f"{BASE}/Goal/Data?goalCode=8&areaCode=360&pageSize=5",
-        f"{BASE}/Indicator/Data?indicator=8.5.2&areaCode=360&pageSize=5",
-        f"{BASE}/GeoArea/List",
-    ]:
-        ringkas(u)
-        time.sleep(1)
+with st.spinner("Menghubungkan ke katalog World Development Indicators..."):
+    all_indicators = load_all_indicators()
 
-    st.header("B. Kecepatan pemindaian per seri (10 seri pertama dari katalog)")
-    daftar = requests.get(f"{BASE}/Series/List", headers=H, timeout=40).json()
-    t0, hasil = time.time(), []
-    for s in daftar[:10]:
+if not all_indicators:
+    st.error("Gagal memuat katalog indikator. Periksa koneksi internet.")
+    st.stop()
+
+# =============================================================================
+# 2. PENCARIAN BEBAS
+# =============================================================================
+st.subheader("1. Pencarian Indikator")
+
+# Keyword preset per topik
+TOPIC_PRESETS = {
+    "— Pilih Topik Cepat (opsional) —": "",
+    # Makroekonomi
+    "💰 GDP & Pertumbuhan Ekonomi": "gdp growth",
+    "📉 Inflasi & Harga": "inflation",
+    "🏦 Keuangan & Perbankan": "credit bank interest",
+    "💸 Perdagangan & Ekspor": "export import trade",
+    "📊 Kemiskinan & Ketimpangan": "poverty gini",
+    "💼 Fiskal & Utang": "tax revenue debt",
+    "🏙️ Urbanisasi & Populasi": "urban population",
+    "🔬 Teknologi & Inovasi": "technology research",
+    # ILO — Ketenagakerjaan
+    "👷 Pengangguran (ILO)": "unemployment",
+    "💼 Angkatan Kerja (ILO)": "labor force participation",
+    "🏭 Penyerapan Kerja (ILO)": "employment",
+    "⚠️ Pekerja Rentan (ILO)": "vulnerable employment",
+    "📦 Sektor Kerja (ILO)": "employment agriculture industry services",
+    # UNESCO — Pendidikan
+    "📚 Partisipasi Sekolah (UNESCO)": "school enrollment",
+    "✏️ Literasi & Melek Huruf (UNESCO)": "literacy",
+    "👩‍🏫 Rasio Murid-Guru (UNESCO)": "pupil teacher",
+    "💰 Anggaran Pendidikan (UNESCO)": "education expenditure",
+    "🎓 Kelulusan & Putus Sekolah (UNESCO)": "completion dropout",
+    # Kesehatan & Lingkungan
+    "🏥 Kesehatan": "mortality health",
+    "⚡ Energi": "energy electricity",
+    "🌿 Iklim & Lingkungan": "co2 emission forest",
+    "👩 Gender": "female gender women",
+}
+
+col_preset, col_search = st.columns([1, 2])
+
+with col_preset:
+    preset = st.selectbox("⚡ Topik Cepat:", list(TOPIC_PRESETS.keys()))
+
+with col_search:
+    query = st.text_input(
+        "🔍 Atau ketik kata kunci (bisa diedit):",
+        value=TOPIC_PRESETS[preset],
+        placeholder="Contoh: gdp · inflation · poverty · unemployment · export · debt · co2 · forest",
+    ).strip()
+
+if not query:
+    st.info("Ketik kata kunci untuk mulai mencari indikator. Contoh: **gdp**, **inflation**, **poverty**, **unemployment**, **export**, **debt**.")
+    st.stop()
+
+query_tokens = query.lower().split()
+results = [
+    ind for ind in all_indicators
+    if any(
+        token in ind["name"].lower() or token in ind["id"].lower()
+        for token in query_tokens
+    )
+]
+results = sorted(results, key=lambda x: (len(x["name"]), x["name"]))
+
+if not results:
+    st.warning(f"Tidak ditemukan indikator untuk kata kunci **'{query}'**. Coba kata kunci lain.")
+    st.stop()
+
+st.success(f"Ditemukan **{len(results)}** indikator untuk kata kunci **'{query}'**.")
+
+# =============================================================================
+# 3. PILIH INDIKATOR
+# =============================================================================
+selected_ind = st.selectbox(
+    "Pilih Indikator:",
+    options=results,
+    format_func=lambda item: item["name"]
+)
+
+kode_indikator = selected_ind["id"]
+link_resmi = f"https://data.worldbank.org/indicator/{kode_indikator}?locations=ID"
+
+with st.expander("ℹ️ Definisi & Metodologi Resmi", expanded=False):
+    st.markdown(f"**Kode Indikator:** `{kode_indikator}`")
+    st.markdown(f"**Organisasi Sumber:** {selected_ind['sourceOrg']}")
+    note = selected_ind.get("sourceNote", "")
+    st.markdown(f"**Definisi:** {note if note else 'Tidak ada deskripsi rinci.'}")
+    st.markdown(f"🔗 [Lihat di World Bank]({link_resmi})")
+
+# =============================================================================
+# 4. PENARIKAN DATA INDONESIA — 100% LIVE
+# =============================================================================
+st.subheader("2. Penarikan Data Indonesia")
+
+if st.button("📊 Ambil Data Indonesia", type="primary"):
+    with st.spinner(f"Mengunduh data untuk '{selected_ind['name']}'..."):
+        data_url = (
+            f"https://api.worldbank.org/v2/country/IDN/indicator/{kode_indikator}"
+            f"?format=json&per_page=1000"
+        )
         try:
-            r = requests.get(f"{BASE}/Series/Data?seriesCode={s['code']}&areaCode=360&pageSize=1",
-                             headers=H, timeout=40)
-            hasil.append((s["code"], r.status_code, r.json().get("totalElements") if r.status_code == 200 else None))
+            r_data = requests.get(data_url, headers=HEADERS, timeout=20)
+
+            if r_data.status_code != 200:
+                st.error(f"Gagal menghubungi server World Bank (HTTP {r_data.status_code}).")
+                st.stop()
+
+            data_json = r_data.json()
+            records = []
+            contoh_mentah = []  # nilai persis seperti dikirim API, untuk verifikasi
+
+            if len(data_json) > 1 and data_json[1]:
+                for item in data_json[1]:
+                    thn = item.get("date")
+                    val = item.get("value")
+                    if thn is not None and val is not None:
+                        try:
+                            records.append({
+                                "Tahun": int(thn),
+                                "nilai_raw": float(val)
+                            })
+                            if len(contoh_mentah) < 5:
+                                contoh_mentah.append((str(thn), repr(val)))
+                        except (ValueError, TypeError):
+                            continue
+
+            if not records:
+                st.warning(
+                    f"Indikator **'{selected_ind['name']}'** terdaftar di World Bank "
+                    "namun data untuk Indonesia belum tersedia. Silakan pilih indikator lain."
+                )
+                st.stop()
+
+            # Satuan mengikuti nama indikator resmi World Bank (tanpa tebakan)
+            val_col = "Nilai"
+            df = (
+                pd.DataFrame(records)
+                .rename(columns={"nilai_raw": val_col})
+                .sort_values(by="Tahun", ascending=True)
+                .reset_index(drop=True)
+            )
+            df["Indikator"] = selected_ind["name"]
+
+            if df["Tahun"].duplicated().any():
+                st.warning(
+                    "Ada lebih dari satu nilai untuk tahun yang sama. Semua baris ditampilkan apa adanya, "
+                    "tanpa diratakan."
+                )
+
+            st.success(f"Berhasil menarik **{len(df)}** observasi tahunan untuk Indonesia!")
+            st.divider()
+
+            st.markdown(f"🔗 **Halaman Resmi World Bank:** [{selected_ind['name']}]({link_resmi})")
+
+            # Tombol Download
+            col1, col2 = st.columns(2)
+            col1.download_button(
+                "📥 Unduh CSV",
+                df.to_csv(index=False).encode("utf-8"),
+                f"{kode_indikator}_indonesia.csv",
+                "text/csv"
+            )
+            buffer = io.BytesIO()
+            with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+                df.to_excel(writer, index=False, sheet_name="World Bank Data")
+            col2.download_button(
+                "📊 Unduh Excel (.xlsx)",
+                buffer.getvalue(),
+                f"{kode_indikator}_indonesia.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+
+            # Visualisasi Plotly
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=df["Tahun"],
+                y=df[val_col],
+                mode="lines+markers",
+                name="Indonesia (World Bank)",
+                line=dict(width=2.5, color="#009688"),
+                marker=dict(size=7),
+                hovertemplate="Tahun %{x}<br>Nilai: %{y:,}<extra></extra>"
+            ))
+            fig.update_layout(
+                xaxis=dict(title="Tahun", tickmode="linear"),
+                yaxis=dict(title=selected_ind["name"]),
+                hovermode="x unified",
+                margin=dict(l=20, r=20, t=30, b=20)
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+            with st.expander("📋 Tabel Angka Lengkap"):
+                st.caption(
+                    "Nilai ditampilkan sebagai teks agar tampilan Streamlit tidak membulatkannya. "
+                    "File CSV dan Excel memuat angka penuh."
+                )
+                tabel = df.sort_values(by="Tahun", ascending=False)
+                st.dataframe(
+                    pd.DataFrame({
+                        "Tahun": tabel["Tahun"],
+                        "Nilai (teks penuh, tanpa pembulatan)": tabel[val_col].map(lambda v: repr(float(v))),
+                    }),
+                    use_container_width=True,
+                    hide_index=True
+                )
+
+            with st.expander("🔍 Verifikasi: nilai mentah dari respons API (5 observasi terbaru)"):
+                st.caption("Nilai persis seperti dikirim server World Bank, sebelum diproses modul ini.")
+                st.dataframe(
+                    pd.DataFrame(contoh_mentah, columns=["Tahun", "Nilai mentah API"]),
+                    use_container_width=True,
+                    hide_index=True
+                )
+
         except Exception as e:
-            hasil.append((s["code"], type(e).__name__, None))
-        time.sleep(0.5)
-    dt = time.time() - t0
-    st.write(hasil)
-    st.write(f"10 seri: {dt:.1f} dtk | perkiraan 713 seri: {dt/10*713/60:.1f} menit")
+            st.error(f"Gagal mengambil data dari server World Bank: {e}")
