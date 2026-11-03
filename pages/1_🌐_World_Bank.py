@@ -12,6 +12,8 @@ st.write(
     "khusus untuk Indonesia secara otomatis dan real-time."
 )
 
+st.caption("Versi modul: 2026-11-03 · nilai ditampilkan dan diunduh tanpa pembulatan")
+
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 }
