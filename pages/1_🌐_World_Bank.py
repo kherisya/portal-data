@@ -164,9 +164,7 @@ if st.button("📊 Ambil Data Indonesia", type="primary"):
                     val = item.get("value")
                     if thn is not None and val is not None:
                         try:
-                            records.append({
-                                "Tahun": int(thn),
-                                "nilai_raw": round(float(val), 4)
+                            records.append({"Tahun": int(thn), "nilai_raw": float(val)})
                             })
                         except (ValueError, TypeError):
                             continue
@@ -178,37 +176,21 @@ if st.button("📊 Ambil Data Indonesia", type="primary"):
                 )
                 st.stop()
 
-            # Deteksi unit dari nama indikator
-            name_lower = selected_ind["name"].lower()
-            if "% of gdp" in name_lower:
-                unit = "% of GDP"
-            elif "current us$" in name_lower or "(current" in name_lower:
-                unit = "USD"
-            elif "constant" in name_lower and ("lcu" in name_lower or "us$" in name_lower):
-                unit = "Constant USD"
-            elif "per capita" in name_lower and "us$" in name_lower:
-                unit = "USD per Capita"
-            elif "%" in selected_ind["name"]:
-                unit = "%"
-            elif any(k in name_lower for k in ["number", "count", "total", "persons", "people"]):
-                unit = "Jiwa"
-            elif "index" in name_lower:
-                unit = "Index"
-            elif "ratio" in name_lower:
-                unit = "Rasio"
-            else:
-                unit = "Nilai"
+            unit = selected_ind["name"]
+            val_col = "Nilai"
 
             val_col = f"Nilai ({unit})"
             df = (
                 pd.DataFrame(records)
-                .groupby("Tahun", as_index=False)["nilai_raw"]
-                .mean()
-                .round(2)
                 .rename(columns={"nilai_raw": val_col})
                 .sort_values(by="Tahun", ascending=True)
+                .reset_index(drop=True)
             )
-
+            if df["Tahun"].duplicated().any():
+                st.warning(
+                    "Ada lebih dari satu nilai untuk tahun yang sama. Semua baris ditampilkan apa adanya, "
+                    "tanpa diratakan."
+                )
             st.success(f"Berhasil menarik **{len(df)}** observasi tahunan untuk Indonesia!")
             st.divider()
 
@@ -241,7 +223,7 @@ if st.button("📊 Ambil Data Indonesia", type="primary"):
                 name="Indonesia (World Bank)",
                 line=dict(width=2.5, color="#009688"),
                 marker=dict(size=7),
-                hovertemplate=f"Tahun %{{x}}<br>Nilai: %{{y:,.2f}} {unit}<extra></extra>"
+                 hovertemplate=f"Tahun %{{x}}<br>Nilai: %{{y:,}} {unit}<extra></extra>"
             ))
             fig.update_layout(
                 xaxis=dict(title="Tahun", tickmode="linear"),
